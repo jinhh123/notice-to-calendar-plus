@@ -14,6 +14,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
+import { addSchedule, loadSchedules } from '../../modules/storage'
 
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
@@ -44,7 +45,12 @@ const mergeOpen = ref(false)
 const mergeTitle = ref('')
 const mergeType = ref('knowledge')
 const mergeTags = ref('')
+const mergeCategory = ref('未分类')
 const merging = ref(false)
+const linkOpen = ref(false)
+const linkUrl = ref('')
+const linkTitle = ref('')
+const linking = ref(false)
 const toast = ref('')
 
 const categoryMap = ref(loadJson(CATEGORY_KEY, {}))
@@ -194,10 +200,95 @@ function toggleStar(item, event) {
   saveJson(STAR_KEY, [...next])
 }
 
-function setCategory(filename, category) {
+async function setCategory(filename, category) {
   categoryMap.value = { ...categoryMap.value, [filename]: category }
   saveJson(CATEGORY_KEY, categoryMap.value)
-  showToast(`已归类到「${category}」`)
+  try {
+    const response = await fetch(`${API_BASE}/api/knowledge/category`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ filename, category })
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(text || `HTTP ${response.status}`)
+    }
+    const updated = await response.json()
+    const target = items.value.find((x) => x.filename === filename)
+    if (target) target.category = updated.category
+    showToast(`已写回文件：${category}`)
+  } catch (err) {
+    showToast(`分类已本地保存，但写回文件失败：${err?.message || err}`, 4000)
+  }
+}
+
+function toChineseScheduleTime(value) {
+  const text = String(value || '')
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/)
+  if (!match) return text
+  const head = `${Number(match[2])}月${Number(match[3])}日`
+  return match[4] ? `${head} ${match[4]}:${match[5]}` : head
+}
+
+function addToSchedule(item) {
+  const time = toChineseScheduleTime(item.date)
+  const exists = loadSchedules().some(
+    (s) => s.title === item.title && s.time === time
+  )
+  if (exists) {
+    showToast('这张卡片已经在日程里了')
+    return
+  }
+  addSchedule({
+    title: item.title,
+    time,
+    location: '',
+    items: [],
+    unit: '',
+    credit: '',
+    isImportant: item.type === 'schedule',
+    isDuration: false,
+    startDate: '',
+    endDate: '',
+    color: item.type === 'schedule' ? '#1677ff' : '#12a150',
+    source: `${item.content}\n\n来源：${item.filename}`,
+    fromKnowledge: item.filename
+  })
+  showToast('已添加到日程')
+}
+
+function openLinkModal() {
+  linkUrl.value = ''
+  linkTitle.value = ''
+  linkOpen.value = true
+}
+
+async function confirmLink() {
+  if (linking.value) return
+  const url = linkUrl.value.trim()
+  if (!/^https?:\/\//i.test(url)) {
+    showToast('请填写 http/https 链接')
+    return
+  }
+  linking.value = true
+  try {
+    const response = await fetch(`${API_BASE}/api/knowledge/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ url, title: linkTitle.value.trim() })
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(text || `HTTP ${response.status}`)
+    }
+    linkOpen.value = false
+    await loadKnowledge()
+    showToast('链接已存为知识卡片')
+  } catch (err) {
+    showToast(`保存链接失败：${err?.message || err}`, 4000)
+  } finally {
+    linking.value = false
+  }
 }
 
 function addCategory(event) {
@@ -281,6 +372,7 @@ function openMerge() {
   mergeTitle.value = first ? `合并-${first.title.slice(0, 12)}` : '合并知识'
   mergeType.value = first?.type === 'schedule' ? 'schedule' : 'knowledge'
   mergeTags.value = ''
+  mergeCategory.value = '未分类'
   mergeOpen.value = true
 }
 
@@ -295,7 +387,8 @@ async function confirmMerge() {
         filenames: selected.value,
         title: mergeTitle.value.trim(),
         type: mergeType.value,
-        tags: mergeTags.value.split(/[,，;；\s]+/).filter(Boolean)
+        tags: mergeTags.value.split(/[,，;；\s]+/).filter(Boolean),
+        category: mergeCategory.value
       })
     })
     if (!response.ok) {
@@ -364,9 +457,21 @@ async function loadKnowledge() {
         date: formatDate(raw.date),
         source: String(raw.source || ''),
         tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
-        content: String(raw.content || '')
+        content: String(raw.content || ''),
+        category: String(raw.category || '未分类'),
+        isMerged: Boolean(raw.is_merged)
       }))
       .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+
+    // 后端 category 是文件里的权威值；旧卡片没有 category 时保留本地拖拽结果
+    const nextMap = { ...categoryMap.value }
+    for (const item of items.value) {
+      if (item.category && item.category !== '未分类') {
+        nextMap[item.filename] = item.category
+      }
+    }
+    categoryMap.value = nextMap
+    saveJson(CATEGORY_KEY, nextMap)
 
     renderCache.clear()
     hasLoaded.value = true
@@ -388,6 +493,8 @@ function onKeydown(event) {
   if (event.key !== 'Escape') return
   if (lightbox.value) {
     lightbox.value = ''
+  } else if (linkOpen.value) {
+    linkOpen.value = false
   } else if (mergeOpen.value) {
     mergeOpen.value = false
   } else if (detail.value) {
@@ -424,6 +531,7 @@ onBeforeUnmount(() => {
         <button class="kv-btn" :disabled="loading" @click="loadKnowledge">
           {{ loading ? '刷新中…' : '刷新' }}
         </button>
+        <button class="kv-btn" @click="openLinkModal">🔗 粘贴链接</button>
         <button class="kv-btn" :class="{ active: selecting }" @click="toggleSelecting">
           {{ selecting ? '退出多选' : '多选合并' }}
         </button>
@@ -511,6 +619,7 @@ onBeforeUnmount(() => {
               <input type="checkbox" :checked="isSelected(item.filename)" @change="toggleSelect(item, $event)" />
             </label>
             <span class="kv-badge">{{ typeMeta(item.type).icon }} {{ typeMeta(item.type).label }}</span>
+            <span v-if="item.isMerged" class="kv-merged-badge">已合并</span>
             <time v-if="item.date" class="kv-date">{{ item.date }}</time>
             <button class="kv-star" :class="{ on: isStarred(item) }" @click="toggleStar(item, $event)">
               {{ isStarred(item) ? '★' : '☆' }}
@@ -560,6 +669,7 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="kv-modal-actions">
+          <button @click="addToSchedule(detail)">📅 添加到日程</button>
           <button @click="copyText(detail.content, '已复制全文')">复制全文</button>
           <button @click="copyLocate(detail)">复制定位信息</button>
           <button @click="toggleStar(detail, $event)">{{ isStarred(detail) ? '★ 已星标' : '☆ 星标' }}</button>
@@ -597,10 +707,32 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <label>标签<input v-model="mergeTags" placeholder="用逗号分隔，例如：学习, 期末" /></label>
-        <p class="kv-merge-tip">会生成一张新的 Markdown 卡片，原卡片保留；图片引用仍指向原 images/ 目录。</p>
+        <label>分类
+          <select v-model="mergeCategory">
+            <option v-for="cat in categories.filter((x) => x !== '全部')" :key="cat">{{ cat }}</option>
+          </select>
+        </label>
+        <p class="kv-merge-tip">会生成一张新的 Markdown 卡片，原卡片保留并写入 is_merged: true；图片引用仍指向原 images/ 目录。</p>
         <footer>
           <button @click="mergeOpen = false">取消</button>
           <button class="primary" :disabled="merging" @click="confirmMerge">{{ merging ? '合并中…' : '确认合并' }}</button>
+        </footer>
+      </section>
+    </div>
+
+    <!-- 粘贴链接 -->
+    <div v-if="linkOpen" class="kv-modal-mask" @click.self="linkOpen = false">
+      <section class="kv-merge">
+        <header>
+          <h2>粘贴链接</h2>
+          <button class="kv-modal-close" @click="linkOpen = false">✕</button>
+        </header>
+        <label>链接<input v-model="linkUrl" placeholder="https://mp.weixin.qq.com/..." @keyup.enter="confirmLink" /></label>
+        <label>标题（可选）<input v-model="linkTitle" placeholder="公众号文章 / 小程序标题" /></label>
+        <p class="kv-merge-tip">公众号文章会保存为可点击链接卡片；小程序若拿不到链接，请保留截图或合并记录。</p>
+        <footer>
+          <button @click="linkOpen = false">取消</button>
+          <button class="primary" :disabled="linking" @click="confirmLink">{{ linking ? '保存中…' : '保存链接' }}</button>
         </footer>
       </section>
     </div>
@@ -649,6 +781,7 @@ onBeforeUnmount(() => {
 .kv-card.type-other { --accent: #8b949e; --soft: #f2f4f7; }
 .kv-card-top { display: flex; align-items: center; gap: 8px; }
 .kv-badge { padding: 3px 8px; font-size: 11px; font-weight: 600; color: var(--accent, #57606a); background: var(--soft, #f2f4f7); border-radius: 999px; white-space: nowrap; }
+.kv-merged-badge { padding: 2px 7px; font-size: 10px; color: #7c3aed; background: #f2edff; border-radius: 999px; white-space: nowrap; }
 .kv-date { margin-left: auto; font-size: 11px; color: #9aa4af; white-space: nowrap; }
 .kv-star { margin-left: 2px; padding: 0 3px; font-size: 16px; color: #c4cad2; background: none; border: none; cursor: pointer; }
 .kv-star.on { color: #f59e0b; }
