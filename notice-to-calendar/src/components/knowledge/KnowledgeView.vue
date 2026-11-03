@@ -80,6 +80,7 @@ const linkOpen = ref(false)
 const linkUrl = ref('')
 const linkTitle = ref('')
 const linking = ref(false)
+const deleting = ref(false)
 const toast = ref('')
 
 const categoryMap = ref(loadJson(CATEGORY_KEY, {}))
@@ -388,6 +389,38 @@ async function migrateLocalCategories() {
     )
   } finally {
     migrating.value = false
+  }
+}
+
+async function deleteItem(item) {
+  if (deleting.value) return
+  const confirmed = window.confirm(
+    `确定删除「${item.title}」？\n\n文件会移动到 D:\\KnowledgeBase\\.trash，不会立即永久删除。`
+  )
+  if (!confirmed) return
+
+  deleting.value = true
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/knowledge/${encodeURIComponent(item.filename)}`,
+      {
+        method: 'DELETE',
+        headers: writeHeaders()
+      }
+    )
+    if (!response.ok) {
+      throw new Error(await readApiError(response))
+    }
+    const result = await response.json()
+    items.value = items.value.filter((x) => x.filename !== item.filename)
+    selected.value = selected.value.filter((x) => x !== item.filename)
+    setSyncError(item.filename, false)
+    if (detail.value?.filename === item.filename) closeDetail()
+    showToast(result.message || '已移到 .trash', 4200)
+  } catch (err) {
+    showToast(`删除失败：${err?.message || err}`, 5000)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -838,6 +871,9 @@ onBeforeUnmount(() => {
           <button @click="copyText(detail.content, '已复制全文')">复制全文</button>
           <button @click="copyLocate(detail)">复制定位信息</button>
           <button @click="toggleStar(detail, $event)">{{ isStarred(detail) ? '★ 已星标' : '☆ 星标' }}</button>
+          <button class="danger" :disabled="deleting" @click="deleteItem(detail)">
+            {{ deleting ? '删除中…' : '删除卡片' }}
+          </button>
           <select :value="categoryOf(detail)" @change="setCategory(detail.filename, $event.target.value)">
             <option v-for="cat in categories.filter((x) => x !== '全部')" :key="cat">{{ cat }}</option>
           </select>
@@ -996,6 +1032,9 @@ onBeforeUnmount(() => {
 .kv-modal-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 10px 22px; border-bottom: 1px solid #f1f4f8; }
 .kv-modal-actions button, .kv-modal-actions select { padding: 6px 10px; font-size: 12px; color: #57606a; background: #f7f9fc; border: 1px solid #e6eaf0; border-radius: 8px; cursor: pointer; font-family: inherit; }
 .kv-modal-actions button:hover { color: #1677ff; border-color: #b3d4ff; }
+.kv-modal-actions button.danger { color: #b42318; background: #fff5f4; border-color: #ffd6d2; }
+.kv-modal-actions button.danger:hover { color: #fff; background: #dc2626; border-color: #dc2626; }
+.kv-modal-actions button:disabled { opacity: 0.55; cursor: wait; }
 .markdown-body { flex: 1; overflow: auto; padding: 18px 24px 24px; font-size: 13.5px; line-height: 1.85; color: #374151; word-break: break-word; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 18px 0 8px; color: #1f2328; line-height: 1.35; }
 .markdown-body :deep(h1) { font-size: 19px; } .markdown-body :deep(h2) { font-size: 17px; } .markdown-body :deep(h3) { font-size: 15px; }
