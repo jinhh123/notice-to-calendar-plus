@@ -33,6 +33,22 @@ function writeHeaders(extra = {}) {
   }
 }
 
+async function readApiError(response) {
+  const text = await response.text().catch(() => '')
+  let detail = text
+  try {
+    const data = JSON.parse(text)
+    detail = data.detail || data.message || text
+  } catch {
+    // 非 JSON 错误保留原文
+  }
+  detail = detail || `HTTP ${response.status}`
+  if (response.status === 401) {
+    return `${detail}。请按 Ctrl+F5 强制刷新；若使用 5173，请重启 Vite 以加载新的 VITE_LOCAL_API_TOKEN`
+  }
+  return detail
+}
+
 const CATEGORY_KEY = 'kb_category_map_v1'
 const CUSTOM_CATEGORY_KEY = 'kb_custom_categories_v1'
 const STAR_KEY = 'kb_starred_v1'
@@ -271,8 +287,7 @@ async function setCategory(filename, category) {
       body: JSON.stringify({ filename, category })
     })
     if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(text || `HTTP ${response.status}`)
+      throw new Error(await readApiError(response))
     }
     const updated = await response.json()
     const target = items.value.find((x) => x.filename === filename)
@@ -355,8 +370,7 @@ async function migrateLocalCategories() {
           body: JSON.stringify({ filename: item.filename, category })
         })
         if (!response.ok) {
-          const text = await response.text().catch(() => '')
-          throw new Error(text || `HTTP ${response.status}`)
+          throw new Error(await readApiError(response))
         }
         const updated = await response.json()
         item.category = updated.category
@@ -398,8 +412,7 @@ async function confirmLink() {
       body: JSON.stringify({ url, title: linkTitle.value.trim() })
     })
     if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(text || `HTTP ${response.status}`)
+      throw new Error(await readApiError(response))
     }
     linkOpen.value = false
     await loadKnowledge()
@@ -520,14 +533,7 @@ async function confirmMerge() {
       })
     })
     if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      let detail = text
-      try {
-        detail = JSON.parse(text).detail || text
-      } catch {
-        // 非 JSON 错误就保留原文
-      }
-      throw new Error(detail || `HTTP ${response.status}`)
+      throw new Error(await readApiError(response))
     }
     mergeOpen.value = false
     selected.value = []
