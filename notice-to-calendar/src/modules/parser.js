@@ -282,7 +282,13 @@ export function normalizeDate(timeStr) {
   if (!timeStr) return ''
   const now = new Date()
 
-  // 明确的「X月X日」优先
+  // 标准 ISO 日期优先：YYYY-MM-DD，跨年不会丢年份
+  const isoMatch = String(timeStr).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+  }
+
+  // 明确的「X月X日」
   const mdMatch = timeStr.match(/(\d{1,2})月(\d{1,2})日/)
   if (mdMatch) {
     const currentYear = dayNumberToString(beijingDayNumber(now)).slice(0, 4)

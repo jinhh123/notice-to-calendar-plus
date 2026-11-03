@@ -21,6 +21,17 @@ const API_BASE = (
 ).replace(/\/+$/, '')
 const API_URL = `${API_BASE}/api/knowledge`
 const REQUEST_TIMEOUT = 8000
+// 本地写操作 Token：放在 .env.local，不提交到仓库
+const LOCAL_API_TOKEN = import.meta.env.VITE_LOCAL_API_TOKEN || ''
+
+function writeHeaders(extra = {}) {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    ...(LOCAL_API_TOKEN ? { Authorization: `Bearer ${LOCAL_API_TOKEN}` } : {}),
+    ...extra
+  }
+}
 
 const CATEGORY_KEY = 'kb_category_map_v1'
 const CUSTOM_CATEGORY_KEY = 'kb_custom_categories_v1'
@@ -56,6 +67,7 @@ const toast = ref('')
 const categoryMap = ref(loadJson(CATEGORY_KEY, {}))
 const customCategories = ref(loadJson(CUSTOM_CATEGORY_KEY, []))
 const starred = ref(new Set(loadJson(STAR_KEY, [])))
+const syncErrors = ref(new Set())
 
 const md = createMarkdown()
 const renderCache = new Map()
@@ -191,6 +203,23 @@ function isStarred(item) {
   return starred.value.has(item.filename)
 }
 
+function isSyncError(filename) {
+  return syncErrors.value.has(filename)
+}
+
+function openMerged(item) {
+  if (!item.mergedInto) {
+    showToast('这张卡没有记录合并去向')
+    return
+  }
+  const target = items.value.find((x) => x.filename === item.mergedInto)
+  if (target) {
+    openDetail(target)
+  } else {
+    showToast(`合并卡片不在当前列表：${item.mergedInto}`)
+  }
+}
+
 function toggleStar(item, event) {
   event?.stopPropagation()
   const next = new Set(starred.value)
@@ -200,13 +229,21 @@ function toggleStar(item, event) {
   saveJson(STAR_KEY, [...next])
 }
 
+function setSyncError(filename, failed) {
+  const next = new Set(syncErrors.value)
+  if (failed) next.add(filename)
+  else next.delete(filename)
+  syncErrors.value = next
+}
+
 async function setCategory(filename, category) {
+  const previous = categoryMap.value[filename] || '未分类'
   categoryMap.value = { ...categoryMap.value, [filename]: category }
   saveJson(CATEGORY_KEY, categoryMap.value)
   try {
     const response = await fetch(`${API_BASE}/api/knowledge/category`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({ filename, category })
     })
     if (!response.ok) {
@@ -216,22 +253,34 @@ async function setCategory(filename, category) {
     const updated = await response.json()
     const target = items.value.find((x) => x.filename === filename)
     if (target) target.category = updated.category
+    setSyncError(filename, false)
     showToast(`已写回文件：${category}`)
   } catch (err) {
-    showToast(`分类已本地保存，但写回文件失败：${err?.message || err}`, 4000)
+    // 写文件失败：回滚界面，不能让用户误以为已保存
+    categoryMap.value = { ...categoryMap.value, [filename]: previous }
+    saveJson(CATEGORY_KEY, categoryMap.value)
+    setSyncError(filename, true)
+    showToast(`写回失败，已回滚到「${previous}」：${err?.message || err}`, 5000)
   }
 }
 
-function toChineseScheduleTime(value) {
+function toScheduleTime(value) {
   const text = String(value || '')
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/)
-  if (!match) return text
-  const head = `${Number(match[2])}月${Number(match[3])}日`
-  return match[4] ? `${head} ${match[4]}:${match[5]}` : head
+  if (!match) return ''
+  return match[4]
+    ? `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}`
+    : `${match[1]}-${match[2]}-${match[3]}`
 }
 
 function addToSchedule(item) {
-  const time = toChineseScheduleTime(item.date)
+  // 统一用 YYYY-MM-DD 作为时间标准，避免“X月X日”默认成当前年
+  const time = toScheduleTime(item.date)
+  if (!time) {
+    showToast('这张卡片没有可用的日期，无法添加到日程')
+    return
+  }
+  const dateOnly = time.slice(0, 10)
   const exists = loadSchedules().some(
     (s) => s.title === item.title && s.time === time
   )
@@ -248,13 +297,14 @@ function addToSchedule(item) {
     credit: '',
     isImportant: item.type === 'schedule',
     isDuration: false,
-    startDate: '',
+    startDate: dateOnly,
     endDate: '',
     color: item.type === 'schedule' ? '#1677ff' : '#12a150',
-    source: `${item.content}\n\n来源：${item.filename}`,
+    // 只存摘要，禁止把整篇聊天正文塞进 localStorage
+    source: `${stripMarkdown(item.content).slice(0, 200)}\n\n来源：${item.filename}`,
     fromKnowledge: item.filename
   })
-  showToast('已添加到日程')
+  showToast('已添加到日程，可回到日历查看')
 }
 
 function openLinkModal() {
@@ -274,7 +324,7 @@ async function confirmLink() {
   try {
     const response = await fetch(`${API_BASE}/api/knowledge/link`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({ url, title: linkTitle.value.trim() })
     })
     if (!response.ok) {
@@ -382,7 +432,7 @@ async function confirmMerge() {
   try {
     const response = await fetch(`${API_BASE}/api/knowledge/merge`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({
         filenames: selected.value,
         title: mergeTitle.value.trim(),
@@ -458,19 +508,24 @@ async function loadKnowledge() {
         source: String(raw.source || ''),
         tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
         content: String(raw.content || ''),
-        category: String(raw.category || '未分类'),
-        isMerged: Boolean(raw.is_merged)
+        category: String(raw.category || ''),
+        isMerged: Boolean(raw.is_merged),
+        mergedInto: String(raw.merged_into || ''),
+        mergedFrom: Array.isArray(raw.merged_from) ? raw.merged_from.map(String) : []
       }))
       .sort((a, b) => String(b.date).localeCompare(String(a.date)))
 
-    // 后端 category 是文件里的权威值；旧卡片没有 category 时保留本地拖拽结果
+    // 后端 category 是文件里的权威值。旧文件没有 category 时保留本地旧缓存。
     const nextMap = { ...categoryMap.value }
+    const nextErrors = new Set(syncErrors.value)
     for (const item of items.value) {
-      if (item.category && item.category !== '未分类') {
+      if (item.category) {
         nextMap[item.filename] = item.category
+        nextErrors.delete(item.filename)
       }
     }
     categoryMap.value = nextMap
+    syncErrors.value = nextErrors
     saveJson(CATEGORY_KEY, nextMap)
 
     renderCache.clear()
@@ -619,7 +674,13 @@ onBeforeUnmount(() => {
               <input type="checkbox" :checked="isSelected(item.filename)" @change="toggleSelect(item, $event)" />
             </label>
             <span class="kv-badge">{{ typeMeta(item.type).icon }} {{ typeMeta(item.type).label }}</span>
-            <span v-if="item.isMerged" class="kv-merged-badge">已合并</span>
+            <button
+              v-if="item.isMerged"
+              class="kv-merged-badge"
+              :title="item.mergedInto ? `已合并到：${item.mergedInto}` : '已合并'"
+              @click.stop="openMerged(item)"
+            >已合并</button>
+            <span v-if="isSyncError(item.filename)" class="kv-sync-badge">⚠ 未同步</span>
             <time v-if="item.date" class="kv-date">{{ item.date }}</time>
             <button class="kv-star" :class="{ on: isStarred(item) }" @click="toggleStar(item, $event)">
               {{ isStarred(item) ? '★' : '☆' }}
@@ -781,7 +842,8 @@ onBeforeUnmount(() => {
 .kv-card.type-other { --accent: #8b949e; --soft: #f2f4f7; }
 .kv-card-top { display: flex; align-items: center; gap: 8px; }
 .kv-badge { padding: 3px 8px; font-size: 11px; font-weight: 600; color: var(--accent, #57606a); background: var(--soft, #f2f4f7); border-radius: 999px; white-space: nowrap; }
-.kv-merged-badge { padding: 2px 7px; font-size: 10px; color: #7c3aed; background: #f2edff; border-radius: 999px; white-space: nowrap; }
+.kv-merged-badge { padding: 2px 7px; font-size: 10px; color: #7c3aed; background: #f2edff; border: none; border-radius: 999px; white-space: nowrap; cursor: pointer; font-family: inherit; }
+.kv-sync-badge { padding: 2px 7px; font-size: 10px; color: #b42318; background: #fff1f0; border-radius: 999px; white-space: nowrap; }
 .kv-date { margin-left: auto; font-size: 11px; color: #9aa4af; white-space: nowrap; }
 .kv-star { margin-left: 2px; padding: 0 3px; font-size: 16px; color: #c4cad2; background: none; border: none; cursor: pointer; }
 .kv-star.on { color: #f59e0b; }

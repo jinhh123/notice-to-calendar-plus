@@ -13,6 +13,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '')
+const LOCAL_API_TOKEN = import.meta.env.VITE_LOCAL_API_TOKEN || ''
 
 const status = ref({})
 const error = ref('')
@@ -77,7 +78,12 @@ async function request(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
       signal: controller.signal,
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(options.headers || {}) }
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...(LOCAL_API_TOKEN ? { Authorization: `Bearer ${LOCAL_API_TOKEN}` } : {}),
+        ...(options.headers || {})
+      }
     })
     if (!response.ok) {
       const text = await response.text().catch(() => '')
