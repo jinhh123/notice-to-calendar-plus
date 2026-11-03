@@ -490,7 +490,7 @@ function openMerge() {
   if (selected.value.length < 2) return
   const already = selected.value
     .map((name) => items.value.find((x) => x.filename === name))
-    .filter((item) => item?.isMerged)
+    .filter((item) => item?.isMerged || item?.mergedInto || item?.mergedFrom?.length)
     .map((item) => item.filename)
   if (already.length) {
     showToast(`已合并过的卡片不能再合并：${already.join('、')}`, 4500)
