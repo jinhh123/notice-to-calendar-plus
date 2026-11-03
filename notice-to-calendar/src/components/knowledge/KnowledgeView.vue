@@ -12,7 +12,7 @@
  *   GET  /api/knowledge
  *   POST /api/knowledge/merge
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { addSchedule, loadSchedules } from '../../modules/storage'
 
@@ -43,7 +43,8 @@ const loading = ref(false)
 const error = ref('')
 const hasLoaded = ref(false)
 
-const query = ref('')
+const searchInput = ref('')
+const query = ref('') // 防抖后的实际过滤词
 const typeFilter = ref('all')
 const categoryFilter = ref('全部')
 const starredOnly = ref(false)
@@ -74,6 +75,7 @@ const renderCache = new Map()
 
 let controller = null
 let toastTimer = null
+let searchTimer = null
 
 const categories = computed(() => {
   const set = new Set([...DEFAULT_CATEGORIES, ...customCategories.value])
@@ -87,12 +89,33 @@ const filtered = computed(() => {
     if (starredOnly.value && !starred.value.has(item.filename)) return false
     if (categoryFilter.value !== '全部' && categoryOf(item) !== categoryFilter.value) return false
     if (!text) return true
-    return [item.title, item.content, item.source, ...(item.tags || [])]
+    return [
+      item.title,
+      item.content,
+      item.source,
+      categoryOf(item),
+      item.category,
+      ...(item.tags || [])
+    ]
       .join(' ')
       .toLowerCase()
       .includes(text)
   })
 })
+
+// 300ms 防抖：输入时不卡，停止输入后再过滤
+watch(searchInput, (value) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    query.value = value
+  }, 300)
+})
+
+function clearSearch() {
+  searchInput.value = ''
+  query.value = ''
+  if (searchTimer) clearTimeout(searchTimer)
+}
 
 const typeCounts = computed(() => ({
   all: items.value.length,
@@ -566,6 +589,7 @@ onBeforeUnmount(() => {
   controller?.abort()
   window.removeEventListener('keydown', onKeydown)
   if (toastTimer) clearTimeout(toastTimer)
+  if (searchTimer) clearTimeout(searchTimer)
 })
 </script>
 
@@ -594,7 +618,17 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="kv-toolbar">
-      <input v-model="query" class="kv-search" type="search" placeholder="搜索标题、正文、来源、标签…" />
+      <div class="kv-search-wrap">
+        <span class="kv-search-icon">🔍</span>
+        <input
+          v-model="searchInput"
+          class="kv-search"
+          type="search"
+          aria-label="搜索知识卡片"
+          placeholder="搜索标题、正文、分类、标签…"
+        />
+        <button v-if="searchInput" class="kv-search-clear" type="button" @click="clearSearch">✕</button>
+      </div>
       <div class="kv-tabs">
         <button :class="{ active: typeFilter === 'all' }" @click="typeFilter = 'all'">全部 {{ typeCounts.all }}</button>
         <button :class="{ active: typeFilter === 'schedule' }" @click="typeFilter = 'schedule'">日程 {{ typeCounts.schedule }}</button>
@@ -655,8 +689,8 @@ onBeforeUnmount(() => {
 
       <div v-else-if="!filtered.length" class="kv-state">
         <div class="kv-state-icon">🗂️</div>
-        <p class="kv-state-title">{{ items.length ? '没有匹配的卡片' : '还没有任何知识条目' }}</p>
-        <p class="kv-state-desc">{{ items.length ? '换个关键词或分类试试。' : '在微信里采集一条记录，刷新即可看到。' }}</p>
+        <p class="kv-state-title">{{ items.length ? '没找到相关的知识卡片，换个词试试？' : '还没有任何知识条目' }}</p>
+        <p class="kv-state-desc">{{ items.length ? '可以试试标题、正文、分类或标签里的其他关键词。' : '在微信里采集一条记录，刷新即可看到。' }}</p>
       </div>
 
       <div v-else class="kv-grid">
@@ -818,8 +852,12 @@ onBeforeUnmount(() => {
 .kv-btn:hover, .kv-btn.active { color: #1677ff; background: #f2f7ff; border-color: #b3d4ff; }
 .kv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .kv-toolbar { display: flex; gap: 10px; max-width: 1200px; margin: 0 auto 10px; flex-wrap: wrap; }
-.kv-search { flex: 1; min-width: 240px; padding: 9px 13px; font-size: 13px; background: #fff; border: 1px solid #e2e7ee; border-radius: 10px; outline: none; }
+.kv-search-wrap { position: relative; display: flex; flex: 1; min-width: 240px; align-items: center; }
+.kv-search { width: 100%; padding: 9px 34px 9px 34px; font-size: 13px; background: #fff; border: 1px solid #e2e7ee; border-radius: 10px; outline: none; }
 .kv-search:focus { border-color: #9cc4ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.1); }
+.kv-search-icon { position: absolute; left: 11px; font-size: 13px; color: #9aa4af; pointer-events: none; }
+.kv-search-clear { position: absolute; right: 8px; width: 22px; height: 22px; padding: 0; font-size: 11px; color: #8f959e; background: #f2f4f7; border: none; border-radius: 50%; cursor: pointer; }
+.kv-search-clear:hover { color: #57606a; background: #e9edf3; }
 .kv-tabs { display: flex; gap: 4px; background: #fff; border: 1px solid #e2e7ee; border-radius: 10px; padding: 3px; }
 .kv-tabs button { padding: 6px 10px; font-size: 12px; color: #6b7684; background: transparent; border: none; border-radius: 7px; cursor: pointer; font-family: inherit; }
 .kv-tabs button.active { color: #1677ff; background: #e8f2ff; font-weight: 600; }
