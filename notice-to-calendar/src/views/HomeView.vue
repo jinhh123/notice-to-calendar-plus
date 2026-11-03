@@ -215,6 +215,7 @@ const viewTitle = computed(() => {
 
         <!-- 知识库：独立路由页面（/knowledge），路由级懒加载 -->
         <RouterLink to="/knowledge" class="nav-item">📚 知识库</RouterLink>
+        <RouterLink to="/console" class="nav-item">🧭 控制台</RouterLink>
       </nav>
       
       <div class="sidebar-bottom" v-show="!sidebarCollapsed">

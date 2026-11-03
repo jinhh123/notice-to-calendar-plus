@@ -15,6 +15,12 @@ const routes = [
     component: () => import('../components/knowledge/KnowledgeView.vue')
   },
   {
+    path: '/console',
+    name: 'Control',
+    // 本地知识库控制台：状态 + 扫描/暂停/日志/目录
+    component: () => import('../views/ControlView.vue')
+  },
+  {
     // 兜底：未知路径回首页
     path: '/:pathMatch(.*)*',
     redirect: '/'
