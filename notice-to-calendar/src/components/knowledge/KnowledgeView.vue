@@ -59,6 +59,7 @@ const mergeType = ref('knowledge')
 const mergeTags = ref('')
 const mergeCategory = ref('未分类')
 const merging = ref(false)
+const migrating = ref(false)
 const linkOpen = ref(false)
 const linkUrl = ref('')
 const linkTitle = ref('')
@@ -330,6 +331,52 @@ function addToSchedule(item) {
   showToast('已添加到日程，可回到日历查看')
 }
 
+async function migrateLocalCategories() {
+  if (migrating.value) return
+  const targets = items.value.filter((item) => {
+    const local = categoryMap.value[item.filename]
+    return local && local !== item.category
+  })
+  if (!targets.length) {
+    showToast('没有需要迁移的旧分类')
+    return
+  }
+
+  migrating.value = true
+  let ok = 0
+  let failed = 0
+  try {
+    for (const item of targets) {
+      const category = categoryMap.value[item.filename]
+      try {
+        const response = await fetch(`${API_BASE}/api/knowledge/category`, {
+          method: 'POST',
+          headers: writeHeaders(),
+          body: JSON.stringify({ filename: item.filename, category })
+        })
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(text || `HTTP ${response.status}`)
+        }
+        const updated = await response.json()
+        item.category = updated.category
+        setSyncError(item.filename, false)
+        ok += 1
+      } catch {
+        setSyncError(item.filename, true)
+        failed += 1
+      }
+    }
+    await loadKnowledge()
+    showToast(
+      `迁移完成：成功 ${ok} 张，失败 ${failed} 张` + (failed ? '，失败项标红' : ''),
+      failed ? 5000 : 2600
+    )
+  } finally {
+    migrating.value = false
+  }
+}
+
 function openLinkModal() {
   linkUrl.value = ''
   linkTitle.value = ''
@@ -441,6 +488,14 @@ function onMarkdownClick(event) {
 
 function openMerge() {
   if (selected.value.length < 2) return
+  const already = selected.value
+    .map((name) => items.value.find((x) => x.filename === name))
+    .filter((item) => item?.isMerged)
+    .map((item) => item.filename)
+  if (already.length) {
+    showToast(`已合并过的卡片不能再合并：${already.join('、')}`, 4500)
+    return
+  }
   const first = items.value.find((x) => x.filename === selected.value[0])
   mergeTitle.value = first ? `合并-${first.title.slice(0, 12)}` : '合并知识'
   mergeType.value = first?.type === 'schedule' ? 'schedule' : 'knowledge'
@@ -466,7 +521,13 @@ async function confirmMerge() {
     })
     if (!response.ok) {
       const text = await response.text().catch(() => '')
-      throw new Error(text || `HTTP ${response.status}`)
+      let detail = text
+      try {
+        detail = JSON.parse(text).detail || text
+      } catch {
+        // 非 JSON 错误就保留原文
+      }
+      throw new Error(detail || `HTTP ${response.status}`)
     }
     mergeOpen.value = false
     selected.value = []
@@ -651,6 +712,9 @@ onBeforeUnmount(() => {
         {{ cat }}
       </button>
       <button class="kv-cat add" @click="addCategory">＋ 新建</button>
+      <button class="kv-cat migrate" :disabled="migrating" @click="migrateLocalCategories">
+        {{ migrating ? '迁移中…' : '一键迁移旧分类到文件' }}
+      </button>
       <span class="kv-drag-hint">拖拽卡片到分类上即可归类</span>
     </div>
 
@@ -866,6 +930,9 @@ onBeforeUnmount(() => {
 .kv-cat { padding: 5px 10px; font-size: 12px; color: #57606a; background: #fff; border: 1px solid #e6eaf0; border-radius: 999px; cursor: pointer; font-family: inherit; }
 .kv-cat.active { color: #1677ff; background: #e8f2ff; border-color: #b3d4ff; }
 .kv-cat.add { color: #8f959e; border-style: dashed; }
+.kv-cat.migrate { color: #7c3aed; background: #f7f3ff; border-color: #e2d8ff; }
+.kv-cat.migrate:hover:not(:disabled) { background: #f0eaff; }
+.kv-cat.migrate:disabled { opacity: 0.6; cursor: wait; }
 .kv-drag-hint { font-size: 11px; color: #a0a8b3; margin-left: 4px; }
 .kv-selectbar { display: flex; align-items: center; gap: 8px; max-width: 1200px; margin: 0 auto 10px; padding: 8px 12px; background: #fff; border: 1px solid #d6e6ff; border-radius: 10px; font-size: 12px; color: #57606a; }
 .kv-selectbar button { padding: 4px 10px; font-size: 12px; color: #1677ff; background: #f2f7ff; border: 1px solid #d6e6ff; border-radius: 7px; cursor: pointer; font-family: inherit; }
